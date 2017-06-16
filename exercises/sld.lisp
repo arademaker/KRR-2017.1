@@ -1,82 +1,102 @@
 ;exercise 1 of chapter 5 of BRACHMAN & LEVESQUE: KRR 2004
 ;by bruno cuconato (@odanoburu)
 ;unlicensed to the public domain.
+;
+;this program cannot be queried twice without restarting its state,
+;because the :on-clauses properties of the symbols will not be reset,
+;which will cause them to decrement the :remaining property of the
+;clauses more than they should, which causes the program to return
+;false results.
+;
+;input: a finite list of atomic sentences, q 1 , . . . , q n
+;output: YES or NO according to whether a given KB entails all of the q i
+;1. if all of the goals q i are marked as solved, then return YES
+;2. check if there is a clause [ p, ¬p 1 , . . . , ¬p n ] in KB, such that all of its
+;negative atoms p 1 , ..., p n are marked as solved, and such that the
+;positive atom p is not marked as solved
+;3. if there is such a clause, mark p as solved and go to step 1
+;4. otherwise, return NO
+;
+;another source: https://people.cs.pitt.edu/~milos/courses/cs2740/Lectures/class6.pdf
 
-(defparameter *child-KB*
-  '((Toddler)
-    ((not Toddler) Child)
-    ((not Child) (not Male) Boy)
-    ((not Infant) Child)
-    ((not Child) (not Female) Girl)
-    (Female))
-  "A simple KB.")
+(defparameter *child-kb*
+  (copy-tree '((Toddler)
+    (Toddler Child)
+    (Child Male Boy)
+    (Infant Child)
+    (Child Female Girl)
+    (Female)))
+  "A simple KB."
+  )
 
-(defvar *KB* *child-KB*
-  "the KB explored by forward chaining.")
+(defvar *kb* *child-kb*
+  "the KB explored by forward chaining."
+  )
 
-(defparameter *query*
-  '(Girl)
-  "the query to be made to the KB. will be negated.")
+(defun make-atom(negative-atom ix)
+  "adds clause ix to negative-atom's :on-clauses property."
+  (push ix (get negative-atom :on-clauses)))
 
-(setf *STACK*
-      nil)
+(defun make-atoms(negative-atoms ix)
+  "iterates over negative-atoms provided and passes them to make-atom
+function"
+  (dolist (negative-atom negative-atoms)
+    (make-atom negative-atom ix)))
 
-(setf *ATOMS*
-      nil)
-
-(setf *CONCLUSIONS*
-      nil)
-
-(defun add-atom(atom ix)
-  "pushes an empty atom record to the ATOMS variable, except for its on-clauses property, which has the clause where it was found."
-  (push (list :atom atom :visited nil :on-clauses (list ix)) *ATOMS*))
-
-(defun update-atom(atom ix)
-  "adds to the atom's on-clauses property another clause where it was found."
-  (let ((atomo (find-atom atom)))
-    (setf (getf atomo :on-clauses) (cons ix (get-indices atom)))))
-
-(defun find-atom(atom)
-  "returns the property list of a given atom"
-  (first (remove-if-not #'(lambda(record) (equal (getf record :atom) atom)) *ATOMS*)))
-
-;(defun remove-atom(atom)
-;  "returns the property list of all atoms except for the one provided."
-;  (remove-if-not #'(lambda(record) (not (equal (getf record :atom) atom))) *ATOMS*))
-
-(defun get-indices(atom)
-  "gets indices of clauses where atom is found."
-  (getf (find-atom atom) :on-clauses))
-
-(defun make-atoms(clause ix)
-  "takes a clause and recursively builds the ATOMS variable."
-  (cond ((null clause) *ATOMS*)
-	(t (if (null (find-atom (first clause)))
-	    (add-atom (first clause) ix); if atom not in ATOMS
-	    (update-atom (first clause) ix)); if atom already in ATOMS
-	 (make-atoms (rest clause) ix)))); recurse
+(defun clause-symbol(ix)
+  "takes a clause index and returns the symbol that refers to it."
+  (intern (format nil "clause~D" ix)))
 
 (defun make-conclude(clause ix)
-  "make the plist conclusion, where the property name is the atom/goal and the value is the number of atoms appearing negatively in the clause that are not yet known to be true."
-  (push (cons ix (list (first (last clause)) (- (length clause) 1))) *CONCLUSIONS*))
+  "each clause is a symbol named after its index. this function sets
+the clauses' :conclusion property after its conclusion (positive atom
+in the horn clause) and the :remaining property after the number of
+negative atoms left to resolve in the clause"
+  (setf (get (clause-symbol ix) :conclusion) (first (last clause)))
+  (setf (get (get (clause-symbol ix) :conclusion) :visited) nil)
+  (setf (get (clause-symbol ix) :remaining) (- (length clause) 1)))
+  
+(defun parse-clause(clause ix)
+  "parses clause; adds its negative atoms to the at"
+  (cond ((null clause) nil)
+	(t (if (not (= 1 (length clause)))
+	       (make-atoms (butlast clause) ix)); for non-atomic clauses, gets all negatively appearing atoms
+	   (make-conclude clause ix); makes clause conclusion
+	   )))
 
 (defun parse-kb(kb)
   "parses KB in appropriate format"
   (loop for clause in kb
      for ix from 0
-     do (make-atoms clause ix)
-     do (make-conclude clause ix)))
+     do (parse-clause clause ix)))
 
-(defun add-to-goals(atom &optional (solved nil))
-  (push (list atom solved) *GOALS*))
+(defun push-stack(kb)
+  "searches through the KB to check for atoms proven to be true."
+  (let ((true-atoms nil))
+  (loop for clause in kb
+     for ix from 0
+     when (= (get (clause-symbol ix) :remaining) 0); if all negative atoms in clause have been resolved
+     do (if (null (get (get (clause-symbol ix) :conclusion) :visited)); if conclusion has not been visited yet
+	    (push (get (clause-symbol ix) :conclusion) true-atoms))); add conclusion to stack, so that it can be propagated
+  true-atoms))
 
-(defun query-kb(query kb)
-  (add-to-goals query)))
+(defun pop-stack(stack)
+  "takes the first element and from the stack and resolves it with all
+the atoms it can, by decrementing the :remaining property on the
+clauses it appears negatively. also marks it as visited."
+  (setf (get (first stack) :visited) t)
+  (dolist (ix (get (pop stack) :on-clauses))
+    (decf (get (clause-symbol ix) :remaining)))
+  stack)
 
-(defun forward-chain(kb goals conclusions)
-  (search-resolutions kb conclusions)
-  (let ((solved (checkgoals goals)))
-  (cond ((null solved) (print "NO"))
-	((= 1 solved) (print "YES"))
-      (t (forward-chain kb goals conclusions))
-      ))
+(defun query-kb(kb query)
+  "query the given kb, which is a list of horn clauses. query must be a positive atom."
+  (parse-kb kb); populate symbol's property lists
+  (let ((stack nil))
+    (setf stack (push-stack kb)); init stack
+    (loop while (and (not (member query stack)) (not (null stack))); if stack is empty or query is in stack, stop.
+	 do (setf stack (pop-stack stack)); resolve first member of stack
+	 (setf stack (push-stack kb)))
+    (if (member query stack)
+	t
+	nil)))
